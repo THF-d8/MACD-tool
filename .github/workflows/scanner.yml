@@ -2,9 +2,13 @@ name: Hourly MACD Market Scanner
 
 on:
   schedule:
-    # 每小时自动运行一次 (周一至周五，覆盖美股全时段)
-    - cron: '0 * * * 1-5'
-  workflow_dispatch: # 支持随时在网页端手动点击按钮测试
+    # 覆盖美股交易时段 (UTC 时间周一至周五 08:00 - 23:00 与周六 00:00)
+    - cron: '0 8-23 * * 1-5'
+    - cron: '0 0 * * 6'
+  workflow_dispatch: # 支持手动点击按钮随时测试
+
+permissions:
+  contents: write # 赋予自动提交状态文件的权限
 
 jobs:
   scan:
@@ -27,3 +31,11 @@ jobs:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
           python agent.py
+
+      - name: Commit and push state changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add agent_state.json || true
+          git commit -m "Update trading state [skip ci]" || exit 0
+          git push
