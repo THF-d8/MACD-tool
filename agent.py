@@ -7,32 +7,56 @@ import pandas as pd
 import requests
 import yfinance as yf
 
-# ==================== 监控股票池 ====================
+# ==================== 1. 去重合并后的自选股票池 (19只) ====================
 WATCHLIST = [
     "TSLA",
     "NVDA",
     "AAPL",
     "MSFT",
-    "AMD",
-    "AMZN",
     "META",
     "GOOGL",
-    "NFLX",
-    "SPCX",
+    "INTC",
+    "IBM",
+    "CRWV",
+    "RKLB",
     "AVGO",
     "PLTR",
-    "TSM",
-    "CRWV",
     "QQQ",
     "SPY",
+    "AMD",
+    "AMZN",
+    "NFLX",
+    "SPCX",
+    "TSM",
 ]
 
-# 从 GitHub Secrets 中读取 Discord Webhook 环境变量
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK", "")
+STATE_FILE = "sent_alerts.json"
 
 
+# ==================== 2. 状态记忆与防重复模块 ====================
+def load_sent_alerts() -> dict:
+    """加载已推送记录"""
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_sent_alerts(alerts: dict):
+    """保存已推送记录到云端文件"""
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(alerts, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"保存状态文件失败: {e}")
+
+
+# ==================== 3. 指标与波浪切分算法 ====================
 def calculate_macd_and_ema(df: pd.DataFrame) -> pd.DataFrame:
-    """计算 MACD 与 250 EMA"""
     df = df.copy()
     ema_fast = df["Close"].ewm(span=12, adjust=False).mean()
     ema_slow = df["Close"].ewm(span=26, adjust=False).mean()
@@ -44,7 +68,6 @@ def calculate_macd_and_ema(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def segment_macd_waves(df: pd.DataFrame) -> List[Dict]:
-    """将 MACD 直方图按正负切分为红/绿柱堆，并积分计算做功面积"""
     waves = []
     if len(df) < 20:
         return waves
@@ -55,7 +78,7 @@ def segment_macd_waves(df: pd.DataFrame) -> List[Dict]:
 
     for _, group_df in df.groupby("group"):
         wave_type = "red" if group_df["sign"].iloc[0] == -1 else "green"
-        area = group_df["HIST"].abs().sum()  # 柱体绝对值面积积分
+        area = group_df["HIST"].abs().sum()  # 柱体面积积分
         if wave_type == "red":
             extreme_dif = group_df["DIF"].min()
             extreme_price = group_df["Low"].min()
@@ -66,23 +89,26 @@ def segment_macd_waves(df: pd.DataFrame) -> List[Dict]:
         waves.append(
             {
                 "type": wave_type,
+                "start_time": str(group_df.index[0]),
+                "end_time": str(group_df.index[-1]),
                 "area": float(area),
                 "extreme_dif": float(extreme_dif),
                 "extreme_price": float(extreme_price),
+                "bars": len(group_df),
             }
         )
     return waves
 
 
-def send_discord_card(data: dict):
-    """向 Discord 发送结构化买点卡片"""
+# ==================== 4. Discord 卡片推送 ====================
+def send_discord_card(data: dict) -> bool:
     if not DISCORD_WEBHOOK:
-        print("未配置 DISCORD_WEBHOOK，跳过推送")
-        return
+        print("未配置 DISCORD_WEBHOOK")
+        return False
 
     embed = {
         "title": f"🚀【1h MACD 面积背离买点 T1】 - {data['ticker']}",
-        "color": 0x2ECC71,  # 绿色高亮边框
+        "color": 0x2ECC71,
         "description": f"**标的代码**: `{data['ticker']}` | **当前价**: `${data['current_price']:.2f}`",
         "fields": [
             {
@@ -111,34 +137,35 @@ def send_discord_card(data: dict):
                 "inline": True,
             },
         ],
-        "footer": {"text": "MACD 1h Trading Agent • 包含美股盘前盘后夜盘数据"},
+        "footer": {"text": "MACD 1h Agent • 单次买点精准推送 (已过滤重复)"},
         "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
     }
 
     payload = {
-        "username": "MACD Trading Agent",
+        "username": "MACD Trading Bot",
         "avatar_url": "https://i.imgur.com/4M34hi2.png",
         "embeds": [embed],
     }
 
     try:
         resp = requests.post(DISCORD_WEBHOOK, json=payload, timeout=10)
-        if resp.status_code in [200, 204]:
-            print(f"[{data['ticker']}] Discord 推送成功！")
-        else:
-            print(f"Discord 推送异常: {resp.status_code} - {resp.text}")
+        return resp.status_code in [200, 204]
     except Exception as e:
-        print(f"Discord 推送请求失败: {e}")
+        print(f"Discord 推送失败: {e}")
+        return False
 
 
+# ==================== 5. 主扫描逻辑 ====================
 def main():
+    sent_alerts = load_sent_alerts()
+    has_new_alert = False
+
     print(
-        f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 开始扫描标的池 ({len(WATCHLIST)} 只)..."
+        f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 开始扫描 {len(WATCHLIST)} 只标的..."
     )
 
     for ticker in WATCHLIST:
         try:
-            # 1h 级别 K 线，prepost=True 开启盘前盘后/夜盘数据
             df_1h = yf.download(
                 ticker,
                 period="60d",
@@ -146,7 +173,7 @@ def main():
                 prepost=True,
                 progress=False,
             )
-            if df_1h.empty:
+            if df_1h.empty or len(df_1h) < 30:
                 continue
             if isinstance(df_1h.columns, pd.MultiIndex):
                 df_1h.columns = df_1h.columns.get_level_values(0)
@@ -162,11 +189,27 @@ def main():
             P1, A1, B1 = w1["extreme_price"], w1["extreme_dif"], w1["area"]
             P2, A2, B2 = w2["extreme_price"], w2["extreme_dif"], w2["area"]
 
-            # 手稿核心条件判定：
-            # 1. 价格破前低: P2 < P1
-            # 2. DIF 抬高底背离: A2 > A1
-            # 3. 面积萎缩过半: B2 < 0.5 * B1
-            if P2 < P1 and A2 > A1 and B2 < (0.5 * B1):
+            # 1. 核心底背离与面积衰竭条件
+            cond_divergence = (P2 < P1) and (A2 > A1) and (B2 < (0.5 * B1))
+
+            # 2. 拐点触发条件 (红柱处于当前收缩/拐头阶段)
+            h_curr = df_1h["HIST"].iloc[-1]
+            h_prev = df_1h["HIST"].iloc[-2]
+            cond_inflection = h_curr > h_prev  # 柱体向0轴收敛
+
+            if cond_divergence and cond_inflection:
+                # 唯一波段指纹 ID (由标的代码 + 第一波结束时间 + 第二波开始时间 唯一锁定)
+                signal_unique_id = (
+                    f"{ticker}_{w1['end_time']}_{w2['start_time']}"
+                )
+
+                # 如果这个波段已经推送过，直接跳过！绝不重复推送
+                if signal_unique_id in sent_alerts:
+                    print(
+                        f"[{ticker}] 信号已于 {sent_alerts[signal_unique_id]} 推送过，跳过重复通知。"
+                    )
+                    continue
+
                 latest_close = float(df_1h["Close"].iloc[-1])
                 target_ema250 = float(df_1h["EMA_250"].iloc[-1])
 
@@ -184,10 +227,20 @@ def main():
                     "sl_5": latest_close * 0.95,
                     "sl_10": latest_close * 0.90,
                 }
-                send_discord_card(signal_data)
+
+                if send_discord_card(signal_data):
+                    print(f"[{ticker}] 🚀 新买点推送成功！")
+                    sent_alerts[signal_unique_id] = (
+                        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    )
+                    has_new_alert = True
 
         except Exception as e:
             print(f"扫描 {ticker} 发生错误: {e}")
+
+    # 若有新推送，更新状态文件
+    if has_new_alert:
+        save_sent_alerts(sent_alerts)
 
     print("本轮扫描完成。\n")
 
