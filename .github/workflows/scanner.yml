@@ -2,7 +2,7 @@ name: Hourly MACD Market Scanner
 
 on:
   schedule:
-    # 改为每小时的第 15 分运行（避开 0 分拥堵高峰，响应更快）
+    # 改为每小时的第 23 分运行（避开 0 分拥堵高峰，响应更快）
     - cron: '23 8-23 * * 1-5'
     - cron: '23 0 * * 6'
   workflow_dispatch:
