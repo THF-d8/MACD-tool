@@ -1,0 +1,29 @@
+name: Hourly MACD Market Scanner
+
+on:
+  schedule:
+    # 每小时自动运行一次 (周一至周五，覆盖美股全时段)
+    - cron: '0 * * * 1-5'
+  workflow_dispatch: # 支持随时在网页端手动点击按钮测试
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install yfinance pandas numpy requests
+
+      - name: Run MACD Agent
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: |
+          python agent.py
