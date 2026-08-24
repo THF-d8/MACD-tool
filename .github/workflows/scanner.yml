@@ -2,23 +2,23 @@ name: Hourly MACD Market Scanner
 
 on:
   schedule:
-    # 覆盖美股交易时段 (UTC 时间周一至周五 08:00 - 23:00 与周六 00:00)
-    - cron: '0 8-23 * * 1-5'
-    - cron: '0 0 * * 6'
-  workflow_dispatch: # 支持手动点击按钮随时测试
+    # 改为每小时的第 15 分运行（避开 0 分拥堵高峰，响应更快）
+    - cron: '23 8-23 * * 1-5'
+    - cron: '23 0 * * 6'
+  workflow_dispatch:
 
 permissions:
-  contents: write # 赋予自动提交状态文件的权限
+  contents: write
 
 jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
